@@ -2,7 +2,7 @@ import pandas as pd
 import datetime
 from datetime import date
 import asyncio
-
+import pytz
 import logging
 from dotenv import load_dotenv
 import os
@@ -11,7 +11,13 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import nest_asyncio
 import sqlite3
 
+MSK = pytz.timezone('Europe/Moscow')
 
+def msk_today():
+    return datetime.datetime.now(MSK).date()
+
+def msk_date(offset_days=0):
+    return (datetime.datetime.now(MSK) + datetime.timedelta(days=offset_days)).date()
 load_dotenv('.env')
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 SCHEDULE_FILE = os.getenv('SCHEDULE_FILE')
@@ -60,7 +66,7 @@ def list_subs():
 
 def load_schedule(target_date=None):
     if target_date is None:
-        target_date = date.today()
+        target_date = msk_today()
     target_str = target_date.strftime('%d.%m.%Y')
 
     try:
@@ -128,7 +134,7 @@ from telegram.ext import MessageHandler, filters
 
 async def generate_week_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        today = date.today()
+        today = msk_today()
         days_to_this_monday = today.weekday()
         monday = today - datetime.timedelta(days=days_to_this_monday)
 
@@ -173,7 +179,7 @@ async def today_load_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def tomorrow_load(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        today = (date.today()+datetime.timedelta(days=1))
+        today = (msk_today()+datetime.timedelta(days=1))
         date_label = today.strftime('%d.%m.%Y (%A)')
         schedule_data = load_schedule(today)
         formatted = beautiful_format(schedule_data, date_label)
@@ -208,7 +214,7 @@ async def run_all():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
     async def scheduler():
         while True:
-            now = datetime.datetime.now()
+            now = datetime.datetime.now(MSK)
 
             # 05:00 — сегодня
             if now.hour == 5 and now.minute <= 2:
@@ -218,7 +224,7 @@ async def run_all():
 
             # 19:35 — завтра
             elif now.hour == 18 and now.minute == 10:
-                tomorrow = load_schedule(date.today() + datetime.timedelta(days=1))
+                tomorrow = load_schedule(msk_date(1))
                 await send_broadcast(beautiful_format(tomorrow, "Завтра"), "Завтра")
                 await asyncio.sleep(120)
 
