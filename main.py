@@ -158,7 +158,7 @@ async def week_schedule_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def today_load(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        today = date.today()
+        today = msk_today()
         date_label = today.strftime('%d.%m.%Y (%A)')
         schedule_data = load_schedule(today)
         formatted = beautiful_format(schedule_data, date_label)
