@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO)
 
 print(f"📄 Файл: {SCHEDULE_FILE}")
 class SubsDB:
-    def __init__(self, db_path='subscribers.db'):
+    def __init__(self, db_path='/data/subscribers.db'):
         self.db_path = db_path
 
     def _connect(self):
@@ -38,47 +38,90 @@ class SubsDB:
                 'SELECT chat_id FROM subscribers WHERE subscribed=1'
             ).fetchall()]
 
-    def add_subscriber(self, chat_id: int, username: str, first_name: str):
+    def add_subscriber(self, chat_id: int, grp: str, subgrp: str):
         with self._connect() as conn:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS subscribers (
-                    chat_id INTEGER PRIMARY KEY, username TEXT, 
-                    first_name TEXT, subscribed INTEGER DEFAULT 1
+                    chat_id INTEGER PRIMARY KEY, 
+                    grp TEXT,
+                    subgrp TEXT,
+                    potok TEXT DEFAULT `Поток 20 (40.05.03.К 2025_1, 40.05.03.К 2025_2, 40.05.03.К 2025_3, 40.05.03.К 2025_4)`,
+                    subscribed INTEGER DEFAULT 1
                 )
             ''')
-            conn.execute('INSERT OR REPLACE INTO subscribers VALUES (?, ?, ?, 1)',
-                         (chat_id, username[:32], first_name[:64]))
+            conn.execute('''INSERT OR REPLACE INTO subscribers 
+                            (chat_id, grp, subgrp, potok, subscribed) 
+                            VALUES (?, ?, ?, ?, 1)''',
+                         (chat_id,  grp, subgrp,
+                          "Поток 20 (40.05.03.К 2025_1, 40.05.03.К 2025_2, 40.05.03.К 2025_3, 40.05.03.К 2025_4)"))
             conn.commit()
+    def get_user_info(self, chat_id: int):
+        with self._connect() as conn:
+            cursor = conn.execute(
+                'SELECT grp, subgrp from subscribers WHERE chat_id=? AND subscribed=1', (chat_id,)
+            )
+            result = cursor.fetchone()
+            return result if result else (None, None)
+
+
+    def get_active_subs_with_groups(self):
+        with self._connect() as conn:
+            return conn.execute(
+                'SELECT chat_id, grp, subgrp FROM subscribers WHERE subscribed=1'
+            ).fetchall()
 
 db = SubsDB()
+
+
+
+
+
+def get_all_groups():
+    df = pd.read_excel(SCHEDULE_FILE)
+    list_of_groups = df['Группа'].dropna().unique().tolist()
+    return sorted(list_of_groups)
 def list_subs():
     """Список подписчиков"""
     with db._connect() as conn:
-        subs = conn.execute('SELECT chat_id, username, first_name FROM subscribers WHERE subscribed=1').fetchall()
+        subs = conn.execute('SELECT chat_id, grp, subgrp, potok FROM subscribers WHERE subscribed=1').fetchall()
     if not subs:
         print("❌ Подписчиков нет")
         return
     print("📋 Подписчики:")
-    for chat_id, username, first_name in subs:
-        print(f"  {chat_id} | {username} | {first_name}")
+    for chat_id, grp, subgrp, potok in subs:
+        print(f"  {chat_id} | {grp} | {subgrp} | {potok}")
 
 
 
-def load_schedule(target_date=None):
+def load_schedule(target_date=None, chat_id=None):
     if target_date is None:
         target_date = msk_today()
     target_str = target_date.strftime('%d.%m.%Y')
 
     try:
-        df = pd.read_excel('schedule_test.xlsx')
-        groups = ["40.05.03.К 2025_1", "40.05.03.К 2025_1/1",
-                  "Поток 20 (40.05.03.К 2025_1, 40.05.03.К 2025_2, 40.05.03.К 2025_3, 40.05.03.К 2025_4)"]
-
+        df = pd.read_excel(SCHEDULE_FILE)
         df['Группа'] = df['Группа'].astype(str).str.strip()
         df['Дата'] = df['Дата'].astype(str).str.strip()
+        potok = 'Поток 20 (40.05.03.К 2025_1, 40.05.03.К 2025_2, 40.05.03.К 2025_3, 40.05.03.К 2025_4)'
+        if chat_id:
+            grp, subgrp = db.get_user_info(chat_id)
+            if subgrp:
+                filtered = df[((df['Группа'] == subgrp) | (df['Группа'] == grp) | (df['Группа'] == potok)) & (df['Дата'] == target_str)]
+                if not filtered.empty:
+                    return filtered.to_dict('records')
+            filtered = df[(df['Группа'] == grp) & (df['Дата'] == target_str)]
+            if not filtered.empty:
+                return filtered.to_dict('records')
 
-        filtered = df[(df['Группа'].isin(groups)) & (df['Дата'] == target_str)]
-        return filtered.to_dict('records')
+
+        potok = "Поток 20 (40.05.03.К 2025_1, 40.05.03.К 2025_2, 40.05.03.К 2025_3, 40.05.03.К 2025_4)"
+        filtered = df[(df['Группа'] == potok) & (df['Дата'] == target_str)]
+        if not filtered.empty:
+            return filtered.to_dict('records')
+
+
+        return df[df['Дата'] == target_str].to_dict('records')
+
     except Exception as e:
         print(f"❌ {e}")
         return []
@@ -89,6 +132,7 @@ def beautiful_format(schedule, date_label="Сегодня"):
         return f"<b>{date_label}: пар нет!</b>"
 
     msg = f"<b>📚 {date_label}</b>\n\n"
+
     for i, lesson in enumerate(schedule, 1):
         msg += f"<b>Пара {i}</b>\n🕐 <b>{lesson.get('Время', 'N/A')}</b>\n"
         msg += f"📖 {lesson.get('Дисциплина', 'N/A')}\n👨‍🏫 {lesson.get('Преподаватель', 'N/A')}\n📍 {lesson.get('Аудитория', 'N/A')}\n"
@@ -102,38 +146,47 @@ def beautiful_format(schedule, date_label="Сегодня"):
         msg += "➖➖➖\n\n"
     return msg
 
-async def send_broadcast(message: str, label: str = "Рассылка"):
-    print(f"🌅 {label}...")
-    for chat_id in db.get_active_ids():
+async def send_broadcast(date_label="Сегодня"):
+    subs = db.get_active_subs_with_groups()
+    if not subs:
+        print('DB is empty')
+        return
+    target_date = msk_today() if date_label == "Сегодня" else msk_date(1)
+    for chat_id, grp, subgrp in subs:
         try:
-            await bot.send_message(chat_id, message, parse_mode="HTML")
-            print(f"✅ {label} → {chat_id}")
+            schedule = load_schedule(target_date, chat_id)
+            msg = beautiful_format(schedule, date_label)
+            await bot.send_message(chat_id, msg, parse_mode="HTML")
+            print(f"✅ {subgrp} → {chat_id}")
             await asyncio.sleep(0.05)
         except Exception as e:
-            print(f"❌Ошибка:  {label} → {chat_id}: {e}")
+            print(f"❌Ошибка:  {subgrp} → {chat_id}: {e}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     username = update.effective_user.username or "anon"
     first_name = update.effective_user.first_name or "anon"
-
-    db.add_subscriber(chat_id, username, first_name)
-    keyboard = [
-        [KeyboardButton("Сегодня"), KeyboardButton("Завтра"), KeyboardButton("Неделя")]
+    keyboard_start = [
+        [KeyboardButton("40.05.03.К 2025_1/1"), KeyboardButton("40.05.03.К 2025_1/2")],
+        [KeyboardButton("40.05.03.К 2025_2/1"), KeyboardButton("40.05.03.К 2025_2/2")],
+        [KeyboardButton("40.05.03.К 2025_3/1"), KeyboardButton("40.05.03.К 2025_3/2")],
+        [KeyboardButton("40.05.03.К 2025_4/1"), KeyboardButton("40.05.03.К 2025_4/2")]
     ]
     reply_markup = ReplyKeyboardMarkup(
-        keyboard=keyboard,
+        keyboard=keyboard_start,
         resize_keyboard=True,
-        one_time_keyboard=False
+        one_time_keyboard=True
     )
     await update.message.reply_text(
-        f"✅ Подписка!\n👤 {first_name} (@{username})\n📊 Подписчиков: {len(db.get_active_ids())}", reply_markup=reply_markup,
-        parse_mode="HTML"
+        f"👋 <b>{first_name}</b>\n\nВыбери группу:",
+        reply_markup=reply_markup, parse_mode="HTML"
     )
+
 from telegram.ext import MessageHandler, filters
 
 async def generate_week_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        chat_id = update.effective_chat.id
         today = msk_today()
         days_to_this_monday = today.weekday()
         monday = today - datetime.timedelta(days=days_to_this_monday)
@@ -141,7 +194,7 @@ async def generate_week_schedule(update: Update, context: ContextTypes.DEFAULT_T
         for i in range(7):  # Пн → Вс
             current_date = monday + datetime.timedelta(days=i)
             date_label = current_date.strftime('%d.%m.%Y (%A)')
-            schedule_data = load_schedule(current_date)
+            schedule_data = load_schedule(current_date, chat_id)
             formatted = beautiful_format(schedule_data, date_label)
             await update.message.reply_text(formatted, parse_mode="HTML")
         print('Расписание на неделю отправлено!')
@@ -157,10 +210,12 @@ async def week_schedule_command(update: Update, context: ContextTypes.DEFAULT_TY
     await generate_week_schedule(update, context)
 
 async def today_load(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     try:
+        chat_id = update.effective_chat.id
         today = msk_today()
         date_label = today.strftime('%d.%m.%Y (%A)')
-        schedule_data = load_schedule(today)
+        schedule_data = load_schedule(today, chat_id)
         formatted = beautiful_format(schedule_data, date_label)
         await update.message.reply_text(formatted, parse_mode="HTML")
         print('Расписание на сегодня отправлено!')
@@ -179,9 +234,10 @@ async def today_load_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def tomorrow_load(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        chat_id = update.effective_chat.id
         today = (msk_today()+datetime.timedelta(days=1))
         date_label = today.strftime('%d.%m.%Y (%A)')
-        schedule_data = load_schedule(today)
+        schedule_data = load_schedule(today, chat_id)
         formatted = beautiful_format(schedule_data, date_label)
         await update.message.reply_text(formatted, parse_mode="HTML")
         print('Расписание на завтра отправлено!')
@@ -198,15 +254,39 @@ async def tomorrow_load_command(update: Update, context: ContextTypes.DEFAULT_TY
     await tomorrow_load(update, context)
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    chat_id = update.effective_chat.id
+    if "/1" in text or "/2" in text:
+        groups = {
+            "40.05.03.К 2025_1/1": ("40.05.03.К 2025_1", "40.05.03.К 2025_1/1"),
+            "40.05.03.К 2025_1/2": ("40.05.03.К 2025_1", "40.05.03.К 2025_1/2"),
+            "40.05.03.К 2025_2/1": ("40.05.03.К 2025_2", "40.05.03.К 2025_2/1"),
+            "40.05.03.К 2025_2/2": ("40.05.03.К 2025_2", "40.05.03.К 2025_2/2"),
+            "40.05.03.К 2025_3/1": ("40.05.03.К 2025_3", "40.05.03.К 2025_3/1"),
+            "40.05.03.К 2025_3/2": ("40.05.03.К 2025_3", "40.05.03.К 2025_3/2"),
+            "40.05.03.К 2025_4/1": ("40.05.03.К 2025_4", "40.05.03.К 2025_4/1"),
+            "40.05.03.К 2025_4/2": ("40.05.03.К 2025_4", "40.05.03.К 2025_4/2")
+        }
 
+        if text in groups:
+            grp, subgrp = groups[text]
+            db.add_subscriber(chat_id, grp, subgrp)
+            keyboard = [[KeyboardButton("Сегодня"), KeyboardButton("Завтра"), KeyboardButton("Неделя")]]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+            await update.message.reply_text(
+                f"✅ <b>{grp}</b> / <b>{subgrp}</b> выбрана!\n\n"
+                f"\n📊 Подписчиков: {len(db.get_active_ids())}",
+                reply_markup=reply_markup, parse_mode="HTML"
+            )
+            return
     if text == "Сегодня":
-        await today_load(update, context)  # ✅ await + скобки
+        await today_load(update, context)
 
     elif text == "Завтра":
-        await tomorrow_load(update, context)  # ✅ await + скобки
+        await tomorrow_load(update, context)
 
     elif text == "Неделя":
-        await generate_week_schedule(update, context)  # ✅ await + скобки
+        await generate_week_schedule(update, context)
 
 async def run_all():
     app = Application.builder().token(os.getenv('BOT_TOKEN')).build()
@@ -216,16 +296,16 @@ async def run_all():
         while True:
             now = datetime.datetime.now(MSK)
 
-            # 05:00 — сегодня
-            if now.hour == 5 and now.minute <= 2:
+
+            if now.hour == 4 and now.minute == 30:
                 today = load_schedule()
-                await send_broadcast(beautiful_format(today, "Сегодня"), "Сегодня")
+                await send_broadcast("Сегодня")
                 await asyncio.sleep(120)
 
-            # 19:35 — завтра
-            elif now.hour == 18 and now.minute == 10:
+
+            elif now.hour == 17 and now.minute == 20:
                 tomorrow = load_schedule(msk_date(1))
-                await send_broadcast(beautiful_format(tomorrow, "Завтра"), "Завтра")
+                await send_broadcast("Завтра")
                 await asyncio.sleep(120)
 
             await asyncio.sleep(30)
